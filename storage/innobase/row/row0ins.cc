@@ -2552,14 +2552,18 @@ row_ins_clust_index_entry_low(
 	rec_offs	offsets_[REC_OFFS_NORMAL_SIZE];
 	rec_offs*	offsets         = offsets_;
 	rec_offs_init(offsets_);
+	trx_t*		trx	= thr_get_trx(thr);
+	buf_block_t*	block;
 
 	DBUG_ENTER("row_ins_clust_index_entry_low");
+
+	DEBUG_SYNC_C("row_ins_clust_index_entry_low_enter");
 
 	ut_ad(dict_index_is_clust(index));
 	ut_ad(!dict_index_is_unique(index)
 	      || n_uniq == dict_index_get_n_unique(index));
 	ut_ad(!n_uniq || n_uniq == dict_index_get_n_unique(index));
-	ut_ad(!thr_get_trx(thr)->in_rollback);
+	ut_ad(!trx->in_rollback);
 
 	mtr_start(&mtr);
 
@@ -2631,6 +2635,28 @@ row_ins_clust_index_entry_low(
 	}
 #endif /* UNIV_DEBUG */
 
+	block = btr_cur_get_block(cursor);
+
+	if (block->page.id().page_no() == index->page
+	    && !(flags & BTR_NO_UNDO_LOG_FLAG)
+	    && !index->table->is_temporary()
+	    && !entry->is_metadata() && !trx->duplicates
+	    && !trx->ddl && !trx->internal
+	    && page_is_empty(block->frame)) {
+
+		DEBUG_SYNC_C("empty_root_page_insert");
+
+		err = lock_table(0, index->table, LOCK_X, thr);
+
+		if (err != DB_SUCCESS) {
+			mtr_commit(&mtr);
+			trx->error_state = err;
+			goto func_exit;
+		}
+
+		index->table->bulk_trx_id = trx->id;
+	}
+
 	if (UNIV_UNLIKELY(entry->info_bits != 0)) {
 		ut_ad(entry->is_metadata());
 		ut_ad(flags == BTR_NO_LOCKING_FLAG);
@@ -2641,7 +2667,7 @@ row_ins_clust_index_entry_low(
 
 		if (rec_get_info_bits(rec, page_rec_is_comp(rec))
 		    & REC_INFO_MIN_REC_FLAG) {
-			thr_get_trx(thr)->error_info = index;
+			trx->error_info = index;
 			err = DB_DUPLICATE_KEY;
 			goto err_exit;
 		}
@@ -2674,7 +2700,7 @@ row_ins_clust_index_entry_low(
 				/* fall through */
 			case DB_SUCCESS_LOCKED_REC:
 			case DB_DUPLICATE_KEY:
-				thr_get_trx(thr)->error_info = cursor->index;
+				trx->error_info = cursor->index;
 			}
 		} else {
 			/* Note that the following may return also
@@ -2758,7 +2784,7 @@ do_insert:
 				log_write_up_to(mtr.commit_lsn(), true););
 			err = row_ins_index_entry_big_rec(
 				entry, big_rec, offsets, &offsets_heap, index,
-				thr_get_trx(thr)->mysql_thd);
+				trx->mysql_thd);
 			dtuple_convert_back_big_rec(index, entry, big_rec);
 		} else {
 			if (err == DB_SUCCESS
