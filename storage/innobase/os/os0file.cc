@@ -3881,161 +3881,33 @@ static void io_callback(tpool::aiocb* cb)
   fil_aio_callback(request);
 }
 
-#ifdef LINUX_NATIVE_AIO
-/** Checks if the system supports native linux aio. On some kernel
-versions where native aio is supported it won't work on tmpfs. In such
-cases we can't use native aio.
-
-@return: true if supported, false otherwise. */
-#include <libaio.h>
-static bool is_linux_native_aio_supported()
+int os_aio_init()
 {
-	File		fd;
-	io_context_t	io_ctx;
-	std::string log_file_path = get_log_file_path();
+  int max_write_events= int(srv_n_write_io_threads) *
+    OS_AIO_N_PENDING_IOS_PER_THREAD;
+  int max_read_events= int(srv_n_read_io_threads) *
+    OS_AIO_N_PENDING_IOS_PER_THREAD;
+  int max_events= max_read_events + max_write_events;
 
-	memset(&io_ctx, 0, sizeof(io_ctx));
-	if (io_setup(1, &io_ctx)) {
+  int ret= srv_thread_pool->configure_aio(srv_use_native_aio, max_events);
 
-		/* The platform does not support native aio. */
-
-		return(false);
-
-	}
-	else if (!srv_read_only_mode) {
-
-		/* Now check if tmpdir supports native aio ops. */
-		fd = mysql_tmpfile("ib");
-
-		if (fd < 0) {
-			ib::warn()
-				<< "Unable to create temp file to check"
-				" native AIO support.";
-
-			int ret = io_destroy(io_ctx);
-			ut_a(ret != -EINVAL);
-			ut_ad(ret != -EFAULT);
-
-			return(false);
-		}
-	}
-	else {
-		fd = my_open(log_file_path.c_str(), O_RDONLY | O_CLOEXEC,
-			     MYF(0));
-
-		if (fd == -1) {
-
-			ib::warn() << "Unable to open \"" << log_file_path
-				   << "\" to check native"
-				   << " AIO read support.";
-
-			int ret = io_destroy(io_ctx);
-			ut_a(ret != EINVAL);
-			ut_ad(ret != EFAULT);
-
-			return(false);
-		}
-	}
-
-	struct io_event	io_event;
-
-	memset(&io_event, 0x0, sizeof(io_event));
-
-	byte* ptr = static_cast<byte*>(aligned_malloc(srv_page_size,
-						      srv_page_size));
-
-	struct iocb	iocb;
-
-	/* Suppress valgrind warning. */
-	memset(ptr, 0, srv_page_size);
-	memset(&iocb, 0x0, sizeof(iocb));
-
-	struct iocb* p_iocb = &iocb;
-
-	if (!srv_read_only_mode) {
-
-		io_prep_pwrite(p_iocb, fd, ptr, srv_page_size, 0);
-
-	}
-	else {
-		ut_a(srv_page_size >= 512);
-		io_prep_pread(p_iocb, fd, ptr, 512, 0);
-	}
-
-	int	err = io_submit(io_ctx, 1, &p_iocb);
-	srv_stats.buffered_aio_submitted.inc();
-
-	if (err >= 1) {
-		/* Now collect the submitted IO request. */
-		err = io_getevents(io_ctx, 1, 1, &io_event, NULL);
-	}
-
-	aligned_free(ptr);
-	my_close(fd, MYF(MY_WME));
-
-	switch (err) {
-	case 1:
-		{
-			int ret = io_destroy(io_ctx);
-			ut_a(ret != -EINVAL);
-			ut_ad(ret != -EFAULT);
-
-			return(true);
-		}
-
-	case -EINVAL:
-	case -ENOSYS:
-		ib::warn()
-			<< "Linux Native AIO not supported. You can either"
-			" move "
-			<< (srv_read_only_mode ? log_file_path : "tmpdir")
-			<< " to a file system that supports native"
-			" AIO or you can set innodb_use_native_aio to"
-			" FALSE to avoid this message.";
-
-		/* fall through. */
-	default:
-		ib::warn()
-			<< "Linux Native AIO check on "
-			<< (srv_read_only_mode ? log_file_path : "tmpdir")
-			<< "returned error[" << -err << "]";
-	}
-
-	int ret = io_destroy(io_ctx);
-	ut_a(ret != -EINVAL);
-	ut_ad(ret != -EFAULT);
-
-	return(false);
-}
-#endif
-
-
-
-bool os_aio_init(ulint n_reader_threads, ulint n_writer_threads, ulint)
-{
-  int max_write_events= int(n_writer_threads * OS_AIO_N_PENDING_IOS_PER_THREAD);
-  int max_read_events= int(n_reader_threads * OS_AIO_N_PENDING_IOS_PER_THREAD);
-  int max_events = max_read_events + max_write_events;
-	int ret;
-
-#if LINUX_NATIVE_AIO
-	if (srv_use_native_aio && !is_linux_native_aio_supported())
-		srv_use_native_aio = false;
-#endif
-	ret = srv_thread_pool->configure_aio(srv_use_native_aio, max_events);
-	if(ret) {
-		ut_a(srv_use_native_aio);
-		srv_use_native_aio = false;
 #ifdef LINUX_NATIVE_AIO
-		ib::info() << "Linux native AIO disabled";
+  if (ret)
+  {
+    ut_a(srv_use_native_aio);
+    ib::warn() << "Linux Native AIO disabled.";
+    ret= srv_thread_pool->configure_aio(srv_use_native_aio= false, max_events);
+  }
 #endif
-		ret = srv_thread_pool->configure_aio(srv_use_native_aio, max_events);
-		DBUG_ASSERT(!ret);
-	}
-	read_slots = new io_slots(max_read_events, (uint)n_reader_threads);
-	write_slots = new io_slots(max_write_events, (uint)n_writer_threads);
-	return true;
+
+  if (!ret)
+  {
+    read_slots= new io_slots(max_read_events, srv_n_read_io_threads);
+    write_slots= new io_slots(max_write_events, srv_n_write_io_threads);
+  }
+  return ret;
 }
+
 
 void os_aio_free()
 {
@@ -4154,8 +4026,8 @@ os_aio_print(FILE*	file)
 	time_t		current_time;
 	double		time_elapsed;
 
-	for (ulint i = 0; i < srv_n_file_io_threads; ++i) {
-		fprintf(file, "I/O thread " ULINTPF " state: %s (%s)",
+	for (uint i = 0; i < srv_n_file_io_threads; ++i) {
+		fprintf(file, "I/O thread %u state: %s (%s)",
 			i,
 			srv_io_thread_op_info[i],
 			srv_io_thread_function[i]);
