@@ -445,9 +445,14 @@ static bool mysql_admin_table(THD* thd, TABLE_LIST* tables,
   int compl_result_code;
   bool need_repair_or_alter= 0;
   wait_for_commit* suspended_wfc;
+  bool is_admin_cmd_replicated= false;
 
   DBUG_ENTER("mysql_admin_table");
   DBUG_PRINT("enter", ("extra_open_options: %u", extra_open_options));
+  if (!strcmp(operator_name,"analyze") ||
+      !strcmp(operator_name,"optimize") ||
+      !strcmp(operator_name,"repair"))
+    is_admin_cmd_replicated= true;
 
   field_list.push_back(item= new (thd->mem_root)
                        Item_empty_string(thd, "Table",
@@ -1147,6 +1152,13 @@ send_result_message:
         break;
       }
     }
+    /*
+      Admin commands acquire table locks and these locks are not detected by
+      parallel replication deadlock detection-and-handling mechanism. Hence
+      they must be marked as DDL so that they are not scheduled in parallel
+      with conflicting DMLs resulting in deadlock.
+    */
+    thd->transaction.stmt.mark_executed_table_admin_cmd();
     if (table->table && !table->view)
     {
       if (table->table->s->tmp_table)
@@ -1182,9 +1194,7 @@ send_result_message:
     }
     else
     {
-      if (trans_commit_stmt(thd) ||
-          (stmt_causes_implicit_commit(thd, CF_IMPLICIT_COMMIT_END) &&
-           trans_commit_implicit(thd)))
+      if (trans_commit_stmt(thd))
         goto err;
     }
     close_thread_tables(thd);
@@ -1207,6 +1217,11 @@ send_result_message:
       rt->mdl_request.ticket= NULL;
 
     if (protocol->write())
+      goto err;
+  }
+  if (is_admin_cmd_replicated && !thd->lex->no_write_to_binlog)
+  {
+    if (write_bin_log(thd, TRUE, thd->query(), thd->query_length()))
       goto err;
   }
 
@@ -1316,14 +1331,6 @@ bool Sql_cmd_analyze_table::execute(THD *thd)
   res= mysql_admin_table(thd, first_table, &m_lex->check_opt,
                          "analyze", lock_type, 1, 0, 0, 0,
                          &handler::ha_analyze, 0);
-  /* ! we write after unlocking the table */
-  if (!res && !m_lex->no_write_to_binlog)
-  {
-    /*
-      Presumably, ANALYZE and binlog writing doesn't require synchronization
-    */
-    res= write_bin_log(thd, TRUE, thd->query(), thd->query_length());
-  }
   m_lex->select_lex.table_list.first= first_table;
   m_lex->query_tables= first_table;
 
@@ -1372,14 +1379,6 @@ bool Sql_cmd_optimize_table::execute(THD *thd)
     mysql_admin_table(thd, first_table, &m_lex->check_opt,
                       "optimize", TL_WRITE, 1, 0, 0, 0,
                       &handler::ha_optimize, 0);
-  /* ! we write after unlocking the table */
-  if (!res && !m_lex->no_write_to_binlog)
-  {
-    /*
-      Presumably, OPTIMIZE and binlog writing doesn't require synchronization
-    */
-    res= write_bin_log(thd, TRUE, thd->query(), thd->query_length());
-  }
   m_lex->select_lex.table_list.first= first_table;
   m_lex->query_tables= first_table;
 
@@ -1406,14 +1405,6 @@ bool Sql_cmd_repair_table::execute(THD *thd)
                          HA_OPEN_FOR_REPAIR, &prepare_for_repair,
                          &handler::ha_repair, &view_repair);
 
-  /* ! we write after unlocking the table */
-  if (!res && !m_lex->no_write_to_binlog)
-  {
-    /*
-      Presumably, REPAIR and binlog writing doesn't require synchronization
-    */
-    res= write_bin_log(thd, TRUE, thd->query(), thd->query_length());
-  }
   m_lex->select_lex.table_list.first= first_table;
   m_lex->query_tables= first_table;
 
