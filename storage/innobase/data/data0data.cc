@@ -74,6 +74,18 @@ void dtuple_t::trim(const dict_index_t& index)
 	n_fields = i;
 }
 
+bool
+dtuple_t::vers_history_row() const
+{
+	for (ulint i = 0; i < n_fields; i++) {
+		const dfield_t* field = dtuple_get_nth_field(this, i);
+		if (field->type.vers_sys_end()) {
+			return field->vers_history_row();
+		}
+	}
+	return false;
+}
+
 /** Compare two data tuples.
 @param[in] tuple1 first data tuple
 @param[in] tuple2 second data tuple

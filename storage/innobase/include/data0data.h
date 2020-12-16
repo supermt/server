@@ -543,6 +543,7 @@ struct dtuple_t {
 	inserted or updated.
 	@param[in]	index	index possibly with instantly added columns */
 	void trim(const dict_index_t& index);
+	bool vers_history_row() const;
 };
 
 inline ulint dtuple_get_n_fields(const dtuple_t* tuple)
