@@ -1436,7 +1436,19 @@ void THD::cleanup(void)
 
 void THD::free_connection()
 {
+  /* Ensure that no one is using THD and do not allow concurrent
+  THD::awake() */
+#ifdef WITH_WSREP
+  mysql_mutex_lock(&LOCK_thd_data);
+#endif
+  mysql_mutex_lock(&LOCK_thd_kill);
   DBUG_ASSERT(free_connection_done == 0);
+  mysql_mutex_unlock(&LOCK_thd_kill);
+#ifdef WITH_WSREP
+  mysql_mutex_unlock(&LOCK_thd_data);
+  delete wsrep_rgi;
+  wsrep_rgi= 0;
+#endif
   my_free(db);
   db= NULL;
 #ifndef EMBEDDED_LIBRARY
@@ -1508,13 +1520,6 @@ THD::~THD()
   if (!status_in_global)
     add_status_to_global();
 
-  /* Ensure that no one is using THD */
-  mysql_mutex_lock(&LOCK_thd_data);
-  mysql_mutex_unlock(&LOCK_thd_data);
-
-#ifdef WITH_WSREP
-  delete wsrep_rgi;
-#endif
   if (!free_connection_done)
     free_connection();
 
