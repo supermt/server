@@ -3579,6 +3579,16 @@ row_ins_get_row_from_select(
 	}
 }
 
+inline
+bool ins_node_t::vers_history_row() const
+{
+	if (!table->versioned())
+		return false;
+	dfield_t* row_end = dtuple_get_nth_field(row, table->vers_end);
+	return row_end->vers_history_row();
+}
+
+
 /***********************************************************//**
 Inserts a row to a table.
 @return DB_SUCCESS if operation successfully completed, else error
@@ -3619,8 +3629,8 @@ row_ins(
 	while (node->index != NULL) {
 		dict_index_t *index = node->index;
 		/*
-		   We do not insert history rows into FTS_DOC_ID_INDEX because
-		   it is unique by FTS_DOC_ID only and we do not want to add
+		   We do not insert history rows into DOC_ID_INDEX because
+		   it is unique by DOC_ID only and we do not want to add
 		   row_end to unique key. Fulltext field works the way new
 		   DOC_ID is created on every fulltext UPDATE, so holding only
 		   DOC_ID for history is enough.
@@ -3796,12 +3806,4 @@ error_handling:
 	}
 
 	return(thr);
-}
-
-bool ins_node_t::vers_history_row() const
-{
-	if (!table->versioned())
-		return false;
-	dfield_t* row_end = dtuple_get_nth_field(row, table->vers_end);
-	return row_end->vers_history_row();
 }

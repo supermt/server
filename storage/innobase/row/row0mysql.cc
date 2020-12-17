@@ -2129,9 +2129,8 @@ static dberr_t row_update_vers_insert(que_thr_t* thr, upd_node_t* node)
 	ut_ad(table->versioned());
 
 	dtuple_t*       row;
-	ulint           n_cols        = dict_table_get_n_cols(table);
-	ulint           n_v_cols      = dict_table_get_n_v_cols(table);
-	ulint           i;
+	const ulint     n_cols        = dict_table_get_n_cols(table);
+	const ulint     n_v_cols      = dict_table_get_n_v_cols(table);
 
 	ut_ad(n_cols == dtuple_get_n_fields(node->historical_row));
 	ut_ad(n_v_cols == dtuple_get_n_v_fields(node->historical_row));
@@ -2153,7 +2152,7 @@ static dberr_t row_update_vers_insert(que_thr_t* thr, upd_node_t* node)
 
 	ut_ad(n_cols > DATA_N_SYS_COLS);
 	// Exclude DB_ROW_ID, DB_TRX_ID, DB_ROLL_PTR
-	for (i = 0; i < n_cols - DATA_N_SYS_COLS; i++) {
+	for (ulint i = 0; i < n_cols - DATA_N_SYS_COLS; i++) {
 		dfield_t *src= dtuple_get_nth_field(node->historical_row, i);
 		dfield_t *dst= dtuple_get_nth_field(row, i);
 		dfield_copy(dst, src);
@@ -2177,7 +2176,7 @@ static dberr_t row_update_vers_insert(que_thr_t* thr, upd_node_t* node)
 		}
 	}
 
-	for (i = 0; i < n_v_cols; i++) {
+	for (ulint i = 0; i < n_v_cols; i++) {
 		dfield_t *dst= dtuple_get_nth_v_field(row, i);
 		dfield_t *src= dtuple_get_nth_v_field(node->historical_row, i);
 		dfield_copy(dst, src);
