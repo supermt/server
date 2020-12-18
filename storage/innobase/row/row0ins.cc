@@ -2318,8 +2318,6 @@ row_ins_duplicate_error_in_clust(
 	rec_offs offsets_[REC_OFFS_NORMAL_SIZE];
 	rec_offs* offsets		= offsets_;
 	rec_offs_init(offsets_);
-	ulint trx_id_len;
-	byte *trx_id;
 
 	ut_ad(dict_index_is_clust(cursor->index));
 
@@ -2390,9 +2388,10 @@ duplicate:
 				if (cursor->index->table->versioned()
 				    && entry->vers_history_row())
 				{
-					trx_id = rec_get_nth_field(rec, offsets,
-								   n_unique,
-								   &trx_id_len);
+					ulint trx_id_len;
+					byte *trx_id = rec_get_nth_field(
+						rec, offsets, n_unique,
+						&trx_id_len);
 					ut_ad(trx_id_len == DATA_TRX_ID_LEN);
 					if (trx->id == trx_read_trx_id(trx_id)) {
 						err = DB_FOREIGN_DUPLICATE_KEY;
@@ -3629,28 +3628,29 @@ row_ins(
 	while (node->index != NULL) {
 		dict_index_t *index = node->index;
 		/*
-		   We do not insert history rows into DOC_ID_INDEX because
-		   it is unique by DOC_ID only and we do not want to add
+		   We do not insert history rows into FTS_DOC_ID_INDEX because
+		   it is unique by FTS_DOC_ID only and we do not want to add
 		   row_end to unique key. Fulltext field works the way new
-		   DOC_ID is created on every fulltext UPDATE, so holding only
-		   DOC_ID for history is enough.
+		   FTS_DOC_ID is created on every fulltext UPDATE, so holding only
+		   FTS_DOC_ID for history is enough.
 		*/
-		if (index->type != DICT_FTS && (
-			!node->vers_history_row()
-			/* Assume n_uniq == 1 is only FTS_DOC_ID_INDEX */
-			|| !dict_index_is_unique(index)
-			|| dict_index_get_n_unique(index) > 1)) {
+		const unsigned type = index->type;
+		if (index->type & DICT_FTS) {
+		} else if (!(type & DICT_UNIQUE) || index->n_uniq > 1
+			   || !node->vers_history_row()) {
+
 			dberr_t err = row_ins_index_entry_step(node, thr);
-
-			ut_ad(!node->vers_history_row()
-			      || strcmp(index->name, FTS_DOC_ID_INDEX_NAME)
-			      || (dict_index_is_unique(index)
-				  && dict_index_get_n_unique(index) == 1));
-
 
 			if (err != DB_SUCCESS) {
 				DBUG_RETURN(err);
 			}
+		} else {
+			/* Unique indexes with system versioning must contain
+			the version end column. The only exception is a hidden
+			FTS_DOC_ID_INDEX that InnoDB may create on a hidden or
+			user-created FTS_DOC_ID column. */
+			ut_ad(!strcmp(index->name, FTS_DOC_ID_INDEX_NAME));
+			ut_ad(!strcmp(index->fields[0].name, FTS_DOC_ID_COL_NAME));
 		}
 
 		node->index = dict_table_get_next_index(node->index);
